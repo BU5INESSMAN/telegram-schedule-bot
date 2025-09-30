@@ -21,13 +21,28 @@ ADMIN_CHAT_ID = "457081438"  # Ваш chat_id
 
 # Проверка токена
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не установлен в .env.example файле")
+    raise ValueError("BOT_TOKEN не установлен в .env файле")
 
 # Инициализация базы данных
 db = Database()
 
 # Состояния пользователей
 user_states = {}
+
+# Барнаул часовой пояс (UTC+7)
+BARNAUL_TZ = timedelta(hours=7)
+
+
+def get_barnaul_time():
+    """Получить текущее время в Барнаульском часовом поясе (UTC+7)"""
+    return datetime.utcnow() + BARNAUL_TZ
+
+
+def format_barnaul_time(dt=None):
+    """Форматировать время в Барнаульском часовом поясе"""
+    if dt is None:
+        dt = get_barnaul_time()
+    return dt.strftime('%d.%m.%Y %H:%M')
 
 
 def get_main_keyboard(user_id):
@@ -49,8 +64,8 @@ def get_main_keyboard(user_id):
 
 
 def get_next_saturday():
-    """Получить следующую субботу"""
-    today = datetime.now()
+    """Получить следующую субботу в Барнаульском времени"""
+    today = get_barnaul_time()
     days_ahead = 5 - today.weekday()  # 5 - суббота
     if days_ahead <= 0:  # Если сегодня суббота или позже
         days_ahead += 7
@@ -137,7 +152,7 @@ async def send_day_form(chat_id: int, day_index: int, context: ContextTypes.DEFA
                 f"👤 Сотрудник: {full_name}\n"
                 f"🏪 ПВЗ: {pvz_name}\n"
                 f"📅 Заполнено дней: {filled_days}/{len(week_dates)}\n"
-                f"🕒 Время заполнения: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                f"🕒 Время заполнения: {format_barnaul_time()}"
             )
 
             try:
@@ -318,7 +333,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Пароль принят!\n\n"
             "Теперь введите ваше Имя и Фамилию:\n"
-            "Например: Иван Иванов",
+            "Например: Глеб Самарин",
             reply_markup=get_main_keyboard(user_id)
         )
 
@@ -373,7 +388,7 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 Новый сотрудник зарегистрировался!\n\n"
         f"Имя: {full_name}\n"
         f"ПВЗ: {pvz_name}\n"
-        f"Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"Время: {format_barnaul_time()}"
     )
 
     try:
@@ -640,7 +655,7 @@ async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Чат настроен для получения напоминаний!\n"
         f"ПВЗ: {user[6]}\n"
         f"Chat ID: {chat_id}\n\n"
-        f"Теперь бот будет отправлять сюда напоминания о заполнении анкет каждую субботу в 10:00.",
+        f"Теперь бот будет отправлять сюда напоминания о заполнении анкет каждую субботу в 10:00 по Барнаулу.",
         reply_markup=get_main_keyboard(user_id)
     )
 
@@ -760,7 +775,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("form", send_form))
     application.add_handler(CommandHandler("myschedule", my_schedule))
-    application.add_handler(CommandHandler("setchat", set_chat))  # Добавлена команда setchat
+    application.add_handler(CommandHandler("setchat", set_chat))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("report", manual_report))
     application.add_handler(CommandHandler("collect", manual_collect))
@@ -770,21 +785,22 @@ def main():
     # Обработчики текстовых сообщений в правильном порядке
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    # Настраиваем планировщик задач
+    # Настраиваем планировщик задач с учетом часового пояса Барнаула
     job_queue = application.job_queue
 
     if job_queue:
-        # Задача на субботу (каждую субботу в 10:00)
+        # Задача на субботу (каждую субботу в 10:00 по Барнаулу)
+        # Учитываем что Railway работает в UTC, поэтому вычитаем 7 часов
         job_queue.run_daily(
             start_schedule_collection,
-            time=datetime.strptime("10:00", "%H:%M").time(),
+            time=datetime.strptime("03:00", "%H:%M").time(),  # 10:00 Барнаул - 7 часов = 03:00 UTC
             days=(5,)
         )
 
-        # Задача на воскресенье (каждое воскресенье в 09:00)
+        # Задача на воскресенье (каждое воскресенье в 09:00 по Барнаулу)
         job_queue.run_daily(
             send_admin_report,
-            time=datetime.strptime("09:00", "%H:%M").time(),
+            time=datetime.strptime("02:00", "%H:%M").time(),  # 09:00 Барнаул - 7 часов = 02:00 UTC
             days=(6,)
         )
 
@@ -792,8 +808,8 @@ def main():
     application.post_init = set_commands
 
     # Запускаем бота
-    logging.info("Бот запущен...")
-    print("Бот успешно запущен!")
+    logging.info("Бот запущен с часовым поясом Барнаул (UTC+7)...")
+    print("Бот успешно запущен! Часовой пояс: Барнаул (UTC+7)")
     application.run_polling()
 
 
