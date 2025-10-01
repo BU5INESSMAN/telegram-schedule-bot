@@ -45,6 +45,11 @@ def format_barnaul_time(dt=None):
     return dt.strftime('%d.%m.%Y %H:%M')
 
 
+def get_empty_keyboard():
+    """Получить пустую клавиатуру (скрыть кнопки)"""
+    return ReplyKeyboardMarkup([[]], resize_keyboard=True)
+
+
 def get_main_keyboard(user_id):
     """Получить основную клавиатуру с кнопками"""
     # Проверяем, является ли пользователь администратором
@@ -211,7 +216,7 @@ async def send_day_form(chat_id: int, day_index: int, context: ContextTypes.DEFA
 
 
 async def show_start_time_selection(chat_id: int, day_index: int, context: ContextTypes.DEFAULT_TYPE):
-    """Показать выбор времени начала смены"""
+    """Показать выбор времени начала смены с шагом 30 минут"""
     next_saturday = get_next_saturday()
     week_dates = get_week_dates(next_saturday)
     day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
@@ -219,11 +224,19 @@ async def show_start_time_selection(chat_id: int, day_index: int, context: Conte
     date = week_dates[day_index]
     day_name = day_names[day_index]
 
-    # Создаем кнопки с часами от 9 до 21
+    # Создаем кнопки с часами от 9:00 до 21:00 с шагом 30 минут
     keyboard = []
     row = []
+
+    # Генерируем времена с шагом 30 минут
+    times = []
     for hour in range(9, 22):  # с 9 до 21
-        row.append(InlineKeyboardButton(f"{hour}:00", callback_data=f"start_{day_index}_{hour}"))
+        times.append(f"{hour}:00")
+        if hour < 21:  # 21:30 не нужно
+            times.append(f"{hour}:30")
+
+    for time_str in times:
+        row.append(InlineKeyboardButton(time_str, callback_data=f"start_{day_index}_{time_str}"))
         if len(row) == 3:  # 3 кнопки в ряд
             keyboard.append(row)
             row = []
@@ -242,8 +255,8 @@ async def show_start_time_selection(chat_id: int, day_index: int, context: Conte
     )
 
 
-async def show_end_time_selection(chat_id: int, day_index: int, start_hour: int, context: ContextTypes.DEFAULT_TYPE):
-    """Показать выбор времени окончания смены"""
+async def show_end_time_selection(chat_id: int, day_index: int, start_time: str, context: ContextTypes.DEFAULT_TYPE):
+    """Показать выбор времени окончания смены с шагом 30 минут"""
     next_saturday = get_next_saturday()
     week_dates = get_week_dates(next_saturday)
     day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
@@ -251,11 +264,27 @@ async def show_end_time_selection(chat_id: int, day_index: int, start_hour: int,
     date = week_dates[day_index]
     day_name = day_names[day_index]
 
-    # Создаем кнопки с часами от start_hour+1 до 21
+    # Парсим время начала
+    start_hour, start_minute = map(int, start_time.split(':'))
+    start_total_minutes = start_hour * 60 + start_minute
+
+    # Создаем кнопки с временами от start_time+30min до 21:00
     keyboard = []
     row = []
-    for hour in range(start_hour + 1, 22):  # с start_hour+1 до 21
-        row.append(InlineKeyboardButton(f"{hour}:00", callback_data=f"end_{day_index}_{start_hour}_{hour}"))
+
+    # Генерируем времена с шагом 30 минут, начиная с start_time + 30min
+    times = []
+    current_minutes = start_total_minutes + 30  # начинаем с +30 минут
+
+    while current_minutes <= 21 * 60:  # до 21:00 включительно
+        hour = current_minutes // 60
+        minute = current_minutes % 60
+        time_str = f"{hour}:{minute:02d}"
+        times.append(time_str)
+        current_minutes += 30
+
+    for time_str in times:
+        row.append(InlineKeyboardButton(time_str, callback_data=f"end_{day_index}_{start_time}_{time_str}"))
         if len(row) == 3:  # 3 кнопки в ряд
             keyboard.append(row)
             row = []
@@ -269,7 +298,7 @@ async def show_end_time_selection(chat_id: int, day_index: int, start_hour: int,
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"⏰ {date} - {day_name}\nНачало: {start_hour}:00\n\nВыберите время окончания смены:",
+        text=f"⏰ {date} - {day_name}\nНачало: {start_time}\n\nВыберите время окончания смены:",
         reply_markup=reply_markup
     )
 
@@ -299,13 +328,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_form(update, context)
 
     else:
-        # Новый пользователь - просим ввести пароль
+        # Новый пользователь - просим ввести пароль (без кнопок)
         user_states[user_id] = {'state': 'waiting_password'}
         await update.message.reply_text(
             "👋 Добро пожаловать!\n\n"
             "Для регистрации введите пароль вашего ПВЗ.\n"
             "Пароль можно получить у администратора.",
-            reply_markup=get_main_keyboard(user_id)
+            reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
 
 
@@ -323,7 +352,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем пароль
     pvz = db.get_pvz_by_password(password)
     if pvz:
-        # Переходим к вводу имени и фамилии
+        # Переходим к вводу имени и фамилии (без кнопок)
         user_states[user_id] = {
             'state': 'waiting_full_name',
             'pvz_id': pvz[0],
@@ -333,8 +362,8 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Пароль принят!\n\n"
             "Теперь введите ваше Имя и Фамилию:\n"
-            "Например: Глеб Самарин",
-            reply_markup=get_main_keyboard(user_id)
+            "Например: Иван Иванов",
+            reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
 
     else:
@@ -342,7 +371,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Неверный пароль.\n"
             "Пожалуйста, проверьте пароль и попробуйте еще раз.\n"
             "Пароль можно получить у администратора.",
-            reply_markup=get_main_keyboard(user_id)
+            reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
 
 
@@ -364,7 +393,7 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Пожалуйста, введите и Имя и Фамилию.\n"
             "Например: Иван Иванов\n\n"
             "Попробуйте еще раз:",
-            reply_markup=get_main_keyboard(user_id)
+            reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
         return
 
@@ -380,7 +409,7 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 Ваше имя: {full_name}\n"
         f"🏪 Ваш ПВЗ: {pvz_name}\n\n"
         "Теперь вы можете заполнить анкету расписания, нажав на кнопку ниже:",
-        reply_markup=get_main_keyboard(user_id)
+        reply_markup=get_main_keyboard(user_id)  # Показываем кнопки только после регистрации
     )
 
     # Уведомляем администратора о новой регистрации
@@ -500,19 +529,19 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Пользователь выбрал время начала
         parts = data.split("_")
         day_index = int(parts[1])
-        start_hour = int(parts[2])
+        start_time = parts[2]  # теперь это строка типа "9:30"
 
         await query.edit_message_text(
-            text=f"⏰ Выбрано начало: {start_hour}:00"
+            text=f"⏰ Выбрано начало: {start_time}"
         )
-        await show_end_time_selection(user_id, day_index, start_hour, context)
+        await show_end_time_selection(user_id, day_index, start_time, context)
 
     elif data.startswith("end_"):
         # Пользователь выбрал время окончания
         parts = data.split("_")
         day_index = int(parts[1])
-        start_hour = int(parts[2])
-        end_hour = int(parts[3])
+        start_time = parts[2]  # строка типа "9:30"
+        end_time = parts[3]  # строка типа "18:00"
 
         next_saturday = get_next_saturday()
         week_dates = get_week_dates(next_saturday)
@@ -521,7 +550,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         day_name = day_names[day_index]
 
         # Сохраняем выбранное время
-        time_slot = f"{start_hour}:00-{end_hour}:00"
+        time_slot = f"{start_time}-{end_time}"
         db.save_schedule(user_id, selected_date, time_slot)
 
         await query.edit_message_text(
