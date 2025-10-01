@@ -362,7 +362,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Пароль принят!\n\n"
             "Теперь введите ваше Имя и Фамилию:\n"
-            "Например: Иван Иванов",
+            "Например: Глеб Самарин",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
 
@@ -843,4 +843,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
