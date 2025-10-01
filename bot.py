@@ -117,6 +117,84 @@ async def start_schedule_collection(context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Ошибка отправки напоминания в чат {pvz_name}: {e}")
 
 
+async def send_sunday_reminder(context: ContextTypes.DEFAULT_TYPE):
+    """Отправка напоминания в воскресенье с упоминанием не заполнивших сотрудников"""
+    all_pvz = db.get_all_pvz()
+
+    for pvz in all_pvz:
+        pvz_id, pvz_name, password, chat_id = pvz
+        if not chat_id:
+            continue
+
+        # Получаем список сотрудников этого ПВЗ
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.user_id, u.username, u.first_name, u.full_name 
+            FROM users u 
+            WHERE u.pvz_id = ?
+        ''', (pvz_id,))
+        users = cursor.fetchall()
+        conn.close()
+
+        if not users:
+            continue
+
+        # Получаем даты текущей недели
+        next_saturday = get_next_saturday()
+        week_dates = get_week_dates(next_saturday)
+
+        # Находим сотрудников, которые не заполнили анкету
+        users_without_schedule = []
+
+        for user in users:
+            user_id, username, first_name, full_name = user
+            # Проверяем, есть ли расписание у пользователя на эту неделю
+            user_schedule = db.get_user_schedule(user_id, week_dates)
+            filled_days = sum(1 for date in week_dates if date in user_schedule)
+
+            # Если нет заполненных дней или заполнено меньше 3 дней - считаем не заполнившим
+            if filled_days < 3:
+                display_name = full_name or first_name or f"сотрудник {user_id}"
+                if username:
+                    users_without_schedule.append(f"@{username}")
+                else:
+                    users_without_schedule.append(display_name)
+
+        # Если есть сотрудники без анкеты - отправляем напоминание
+        if users_without_schedule:
+            if len(users_without_schedule) == 1:
+                users_text = users_without_schedule[0]
+                reminder_text = f"{users_text}, не забудьте заполнить анкету расписания!"
+            else:
+                users_text = ", ".join(users_without_schedule)
+                reminder_text = f"Сотрудники: {users_text}\nНе забудьте заполнить анкету расписания!"
+
+            keyboard = [
+                [InlineKeyboardButton("📝 Заполнить анкету", url=f"https://t.me/{context.bot.username}?start=form")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            message_text = (
+                "🔔 Последнее напоминание!\n\n"
+                f"{reminder_text}\n\n"
+                "Заполните анкету до начала недели!"
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=message_text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+                logging.info(f"Воскресное напоминание отправлено в чат ПВЗ {pvz_name}")
+            except Exception as e:
+                logging.error(f"Ошибка отправки воскресного напоминания в чат {pvz_name}: {e}")
+        else:
+            logging.info(f"Все сотрудники ПВЗ {pvz_name} заполнили анкету, напоминание не требуется")
+
+
 async def send_day_form(chat_id: int, day_index: int, context: ContextTypes.DEFAULT_TYPE):
     """Отправка формы для одного дня"""
     user = db.get_user(chat_id)
@@ -362,7 +440,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Пароль принят!\n\n"
             "Теперь введите ваше Имя и Фамилию:\n"
-            "Например: Глеб Самарин",
+            "*Например: Глеб Самарин*",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
 
@@ -391,7 +469,7 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(full_name.split()) < 2:
         await update.message.reply_text(
             "❌ Пожалуйста, введите и Имя и Фамилию.\n"
-            "Например: Глеб Самарин\n\n"
+            "*Например: Глеб Самарин*\n\n"
             "Попробуйте еще раз:",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
@@ -733,12 +811,66 @@ async def manual_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await start_schedule_collection(context)
+    # Спросим какой тип напоминания отправить
+    keyboard = [
+        [
+            InlineKeyboardButton("Субботнее напоминание", callback_data="collect_saturday"),
+            InlineKeyboardButton("Воскресное напоминание", callback_data="collect_sunday")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
-        "✅ Напоминания отправлены!",
-        reply_markup=get_main_keyboard(update.effective_user.id)
+        "Выберите тип напоминания для отправки:",
+        reply_markup=reply_markup
     )
 
+
+# Добавим обработчик для кнопок выбора типа напоминания
+async def handle_collect_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора типа напоминания"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "collect_saturday":
+        await start_schedule_collection(context)
+        await query.edit_message_text("✅ Субботние напоминания отправлены!")
+    elif query.data == "collect_sunday":
+        await send_sunday_reminder(context)
+        await query.edit_message_text("✅ Воскресные напоминания отправлены!")
+
+
+def get_users_without_schedule(pvz_id, week_dates):
+    """Получить список сотрудников без заполненного расписания"""
+    conn = db.get_connection()
+    cursor = conn.cursor()
+
+    # Получаем всех сотрудников ПВЗ
+    cursor.execute('''
+        SELECT u.user_id, u.username, u.first_name, u.full_name 
+        FROM users u 
+        WHERE u.pvz_id = ?
+    ''', (pvz_id,))
+    users = cursor.fetchall()
+    conn.close()
+
+    users_without_schedule = []
+
+    for user in users:
+        user_id, username, first_name, full_name = user
+        # Проверяем, есть ли расписание у пользователя на эту неделю
+        user_schedule = db.get_user_schedule(user_id, week_dates)
+        filled_days = sum(1 for date in week_dates if date in user_schedule)
+
+        # Если нет заполненных дней или заполнено меньше 3 дней - считаем не заполнившим
+        if filled_days < 3:
+            if username:
+                users_without_schedule.append(f"@{username}")
+            else:
+                display_name = full_name or first_name or f"сотрудник {user_id}"
+                users_without_schedule.append(display_name)
+
+    return users_without_schedule
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика"""
@@ -819,17 +951,24 @@ def main():
 
     if job_queue:
         # Задача на субботу (каждую субботу в 10:00 по Барнаулу)
-        # Учитываем что Railway работает в UTC, поэтому вычитаем 7 часов
         job_queue.run_daily(
             start_schedule_collection,
             time=datetime.strptime("03:00", "%H:%M").time(),  # 10:00 Барнаул - 7 часов = 03:00 UTC
             days=(5,)
         )
 
-        # Задача на воскресенье (каждое воскресенье в 09:00 по Барнаулу)
+
+        # НОВАЯ ЗАДАЧА: Воскресное напоминание сотрудникам в 09:00 по Барнаулу
+        job_queue.run_daily(
+            send_sunday_reminder,
+            time=datetime.strptime("02:00", "%H:%M").time(),  # 09:00 Барнаул - 7 часов = 02:00 UTC
+            days=(6,)
+        )
+
+        # Задача на воскресенье (каждое воскресенье в 09:00 по Барнаулу) - ТОЛЬКО ОТЧЕТ
         job_queue.run_daily(
             send_admin_report,
-            time=datetime.strptime("02:00", "%H:%M").time(),  # 09:00 Барнаул - 7 часов = 02:00 UTC
+            time=datetime.strptime("03:00", "%H:%M").time(),  # 09:00 Барнаул - 7 часов = 02:00 UTC
             days=(6,)
         )
 
@@ -843,5 +982,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
