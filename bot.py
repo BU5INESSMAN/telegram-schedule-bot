@@ -391,7 +391,7 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(full_name.split()) < 2:
         await update.message.reply_text(
             "❌ Пожалуйста, введите и Имя и Фамилию.\n"
-            "Например: Иван Иванов\n\n"
+            "Например: Глеб Самарин\n\n"
             "Попробуйте еще раз:",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
