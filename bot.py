@@ -440,7 +440,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Пароль принят!\n\n"
             "Теперь введите ваше Имя и Фамилию:\n"
-            "*Например: Глеб Самарин*",
+            "Например: Глеб Самарин",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
 
@@ -469,7 +469,7 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(full_name.split()) < 2:
         await update.message.reply_text(
             "❌ Пожалуйста, введите и Имя и Фамилию.\n"
-            "*Например: Глеб Самарин*\n\n"
+            "Например: Глеб Самарин\n\n"
             "Попробуйте еще раз:",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
@@ -982,4 +982,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
