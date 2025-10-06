@@ -89,6 +89,8 @@ def get_week_dates(start_date):
 
 async def start_schedule_collection(context: ContextTypes.DEFAULT_TYPE):
     """Запуск сбора расписания в субботу"""
+    logging.info("Запуск автоматического субботнего напоминания")
+
     # Отправляем напоминания в чат ПВЗ
     all_pvz = db.get_all_pvz()
 
@@ -96,59 +98,86 @@ async def start_schedule_collection(context: ContextTypes.DEFAULT_TYPE):
         pvz_id, pvz_name, password, chat_id = pvz
         if chat_id:
             try:
-                keyboard = [
-                    [InlineKeyboardButton("📝 Заполнить анкету", url=f"https://t.me/{context.bot.username}?start=form")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
+                # Получаем количество обычных сотрудников (без администратора)
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT COUNT(*) FROM users 
+                    WHERE pvz_id = ? AND user_id != ?
+                ''', (pvz_id, ADMIN_CHAT_ID))
+                regular_users_count = cursor.fetchone()[0]
+                conn.close()
 
-                message_text = (
-                    "📋 Напоминание!\n\n"
-                    "Пора заполнить анкету расписания на следующую неделю.\n"
-                    "Нажмите на кнопку ниже чтобы перейти к заполнению."
-                )
+                # Если есть обычные сотрудники - отправляем напоминание
+                if regular_users_count > 0:
+                    keyboard = [
+                        [InlineKeyboardButton("📝 Заполнить анкету",
+                                              url=f"https://t.me/{context.bot.username}?start=form")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
 
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=message_text,
-                    reply_markup=reply_markup
-                )
-                logging.info(f"Напоминание отправлено в чат ПВЗ {pvz_name}")
+                    message_text = (
+                        "📋 Напоминание!\n\n"
+                        "Пора заполнить анкету расписания на следующую неделю.\n"
+                        "Нажмите на кнопку ниже чтобы перейти к заполнению."
+                    )
+
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=message_text,
+                        reply_markup=reply_markup
+                    )
+                    logging.info(f"✅ Субботнее напоминание отправлено в чат ПВЗ {pvz_name} (chat_id: {chat_id})")
+                else:
+                    logging.info(f"⚠️ В ПВЗ {pvz_name} нет обычных сотрудников, напоминание не отправлено")
+
             except Exception as e:
-                logging.error(f"Ошибка отправки напоминания в чат {pvz_name}: {e}")
+                logging.error(f"❌ Ошибка отправки напоминания в чат {pvz_name}: {e}")
+        else:
+            logging.info(f"⚠️ Для ПВЗ {pvz_name} не настроен чат для напоминаний")
 
 
 async def send_sunday_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Отправка напоминания в воскресенье с упоминанием не заполнивших сотрудников"""
+    """Отправка напоминания в воскресенье с упоминанием не заполнивших сотрудников (кроме администратора)"""
+    logging.info("Запуск автоматического воскресного напоминания")
+
     all_pvz = db.get_all_pvz()
 
     for pvz in all_pvz:
         pvz_id, pvz_name, password, chat_id = pvz
         if not chat_id:
+            logging.info(f"⚠️ Для ПВЗ {pvz_name} не настроен чат для напоминаний")
             continue
 
-        # Получаем список сотрудников этого ПВЗ
+        # Получаем список сотрудников этого ПВЗ (кроме администратора)
         conn = db.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT u.user_id, u.username, u.first_name, u.full_name 
             FROM users u 
-            WHERE u.pvz_id = ?
-        ''', (pvz_id,))
+            WHERE u.pvz_id = ? AND u.user_id != ?
+        ''', (pvz_id, ADMIN_CHAT_ID))
         users = cursor.fetchall()
         conn.close()
 
         if not users:
+            logging.info(f"⚠️ В ПВЗ {pvz_name} нет зарегистрированных сотрудников (кроме администратора)")
             continue
 
         # Получаем даты текущей недели
         next_saturday = get_next_saturday()
         week_dates = get_week_dates(next_saturday)
 
-        # Находим сотрудников, которые не заполнили анкету
+        # Находим сотрудников, которые не заполнили анкету (кроме администратора)
         users_without_schedule = []
 
         for user in users:
             user_id, username, first_name, full_name = user
+
+            # Пропускаем администратора
+            if str(user_id) == ADMIN_CHAT_ID:
+                continue
+
             # Проверяем, есть ли расписание у пользователя на эту неделю
             user_schedule = db.get_user_schedule(user_id, week_dates)
             filled_days = sum(1 for date in week_dates if date in user_schedule)
@@ -176,7 +205,7 @@ async def send_sunday_reminder(context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             message_text = (
-                "🔔 Последнее напоминание!\n\n"
+                "🔔 Воскресное напоминание!\n\n"
                 f"{reminder_text}\n\n"
                 "Заполните анкету до начала недели!"
             )
@@ -185,14 +214,63 @@ async def send_sunday_reminder(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=message_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
+                    reply_markup=reply_markup
                 )
-                logging.info(f"Воскресное напоминание отправлено в чат ПВЗ {pvz_name}")
+                logging.info(f"✅ Воскресное напоминание отправлено в чат ПВЗ {pvz_name}")
+                logging.info(f"📋 Упомянуты сотрудники: {', '.join(users_without_schedule)}")
             except Exception as e:
-                logging.error(f"Ошибка отправки воскресного напоминания в чат {pvz_name}: {e}")
+                logging.error(f"❌ Ошибка отправки воскресного напоминания в чат {pvz_name}: {e}")
         else:
-            logging.info(f"Все сотрудники ПВЗ {pvz_name} заполнили анкету, напоминание не требуется")
+            logging.info(
+                f"✅ Все сотрудники ПВЗ {pvz_name} (кроме администратора) заполнили анкету, напоминание не требуется")
+
+
+async def send_admin_report(context: ContextTypes.DEFAULT_TYPE):
+    """Отправка отчета администратору"""
+    logging.info("Запуск автоматической отправки отчета администратору")
+
+    next_saturday = get_next_saturday()
+    week_dates = get_week_dates(next_saturday)
+    day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+
+    all_pvz = db.get_all_pvz()
+
+    for pvz in all_pvz:
+        pvz_id, pvz_name, password, chat_id = pvz
+
+        report = f"📊 ОТЧЕТ ПО РАСПИСАНИЮ\nПВЗ: {pvz_name}\nПериод: {week_dates[0]} - {week_dates[-1]}\n\n"
+
+        schedule_data = db.get_pvz_schedule_report(pvz_id, week_dates)
+
+        # Группируем по дням
+        day_schedule = {}
+        for row in schedule_data:
+            # row структура: [0]first_name, [1]username, [2]user_id, [3]date, [4]time_slot, [5]full_name
+            # Используем полное имя из базы данных
+            full_name = row[5] if row[5] else (row[0] or row[1] or f"User_{row[2]}")
+            date = row[3]
+            time_slot = row[4]
+
+            if date not in day_schedule:
+                day_schedule[date] = []
+            day_schedule[date].append(f"{full_name} - {time_slot}")
+
+        for i, date in enumerate(week_dates):
+            report += f"📅 {date} - {day_names[i]}:\n"
+
+            if date in day_schedule:
+                for entry in day_schedule[date]:
+                    report += f"  👤 {entry}\n"
+            else:
+                report += "  ❌ Нет данных\n"
+
+            report += "\n"
+
+        try:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
+            logging.info(f"✅ Отчет для {pvz_name} отправлен администратору")
+        except Exception as e:
+            logging.error(f"❌ Ошибка отправки отчета для {pvz_name}: {e}")
 
 
 async def send_day_form(chat_id: int, day_index: int, context: ContextTypes.DEFAULT_TYPE):
@@ -382,7 +460,10 @@ async def show_end_time_selection(chat_id: int, day_index: int, start_time: str,
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
+    """Обработчик команды /start - ТОЛЬКО для личных чатов"""
+    if update.message.chat.type != 'private':
+        return
+
     user = update.effective_user
     user_id = user.id
 
@@ -440,7 +521,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Пароль принят!\n\n"
             "Теперь введите ваше Имя и Фамилию:\n"
-            "Например: Глеб Самарин",
+            "Например: Иван Иванов",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
 
@@ -469,7 +550,7 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(full_name.split()) < 2:
         await update.message.reply_text(
             "❌ Пожалуйста, введите и Имя и Фамилию.\n"
-            "Например: Глеб Самарин\n\n"
+            "Например: Иван Иванов\n\n"
             "Попробуйте еще раз:",
             reply_markup=get_empty_keyboard()  # Пустая клавиатура
         )
@@ -505,7 +586,11 @@ async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений (кнопок)"""
+    """Обработчик текстовых сообщений (кнопок) - ТОЛЬКО для личных чатов"""
+    # ИГНОРИРУЕМ сообщения из групповых чатов и бесед
+    if update.message.chat.type != 'private':
+        return
+
     user_id = update.effective_user.id
     text = update.message.text
 
@@ -535,7 +620,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def send_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправка формы по команде /form"""
+    """Отправка формы по команде /form - ТОЛЬКО для личных чатов"""
+    if update.message.chat.type != 'private':
+        return
+
     user_id = update.effective_user.id
     user = db.get_user(user_id)
 
@@ -554,7 +642,7 @@ async def send_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки"""
+    """Обработчик нажатий на кнопок"""
     query = update.callback_query
     await query.answer()
 
@@ -645,54 +733,11 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         await send_day_form(user_id, day_index, context)
 
 
-async def send_admin_report(context: ContextTypes.DEFAULT_TYPE):
-    """Отправка отчета администратору"""
-    next_saturday = get_next_saturday()
-    week_dates = get_week_dates(next_saturday)
-    day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-
-    all_pvz = db.get_all_pvz()
-
-    for pvz in all_pvz:
-        pvz_id, pvz_name, password, chat_id = pvz
-
-        report = f"📊 ОТЧЕТ ПО РАСПИСАНИЮ\nПВЗ: {pvz_name}\nПериод: {week_dates[0]} - {week_dates[-1]}\n\n"
-
-        schedule_data = db.get_pvz_schedule_report(pvz_id, week_dates)
-
-        # Группируем по дням
-        day_schedule = {}
-        for row in schedule_data:
-            # row структура: [0]first_name, [1]username, [2]user_id, [3]date, [4]time_slot, [5]full_name
-            # Используем полное имя из базы данных
-            full_name = row[5] if row[5] else (row[0] or row[1] or f"User_{row[2]}")
-            date = row[3]
-            time_slot = row[4]
-
-            if date not in day_schedule:
-                day_schedule[date] = []
-            day_schedule[date].append(f"{full_name} - {time_slot}")
-
-        for i, date in enumerate(week_dates):
-            report += f"📅 {date} - {day_names[i]}:\n"
-
-            if date in day_schedule:
-                for entry in day_schedule[date]:
-                    report += f"  👤 {entry}\n"
-            else:
-                report += "  ❌ Нет данных\n"
-
-            report += "\n"
-
-        try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
-            logging.info(f"Отчет для {pvz_name} отправлен администратору")
-        except Exception as e:
-            logging.error(f"Ошибка отправки отчета для {pvz_name}: {e}")
-
-
 async def my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать мое расписание"""
+    """Показать мое расписание - ТОЛЬКО для личных чатов"""
+    if update.message.chat.type != 'private':
+        return
+
     user_id = update.effective_user.id
     user = db.get_user(user_id)
 
@@ -734,22 +779,20 @@ async def my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить чат для напоминаний"""
+    """Установить чат для напоминаний - РАБОТАЕТ В ЛЮБОМ ЧАТЕ"""
     user_id = update.effective_user.id
     user = db.get_user(user_id)
 
     if not user:
         await update.message.reply_text(
-            "❌ Сначала зарегистрируйтесь с помощью /start",
-            reply_markup=get_main_keyboard(user_id)
+            "❌ Сначала зарегистрируйтесь с помощью /start в личном чате с ботом"
         )
         return
 
     # Проверяем, является ли пользователь администратором
     if str(user_id) != ADMIN_CHAT_ID:
         await update.message.reply_text(
-            "❌ Только администратор может настраивать чат для напоминаний",
-            reply_markup=get_main_keyboard(user_id)
+            "❌ Только администратор может настраивать чат для напоминаний"
         )
         return
 
@@ -762,13 +805,15 @@ async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Чат настроен для получения напоминаний!\n"
         f"ПВЗ: {user[6]}\n"
         f"Chat ID: {chat_id}\n\n"
-        f"Теперь бот будет отправлять сюда напоминания о заполнении анкет каждую субботу в 10:00 по Барнаулу.",
-        reply_markup=get_main_keyboard(user_id)
+        f"Теперь бот будет отправлять сюда напоминания о заполнении анкет каждую субботу в 10:00 по Барнаулу."
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Справка по командам"""
+    """Справка по командам - ТОЛЬКО для личных чатов"""
+    if update.message.chat.type != 'private':
+        return
+
     help_text = (
         "📋 Бот для составления расписания\n\n"
         "Используйте кнопки ниже для работы:\n"
@@ -787,7 +832,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def manual_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ручная отправка отчета"""
+    """Ручная отправка отчета - ТОЛЬКО для личных чатов"""
+    if update.message.chat.type != 'private':
+        return
+
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         await update.message.reply_text(
             "❌ У вас нет прав для этой команды.",
@@ -803,7 +851,10 @@ async def manual_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def manual_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ручной запуск сбора данных"""
+    """Ручной запуск сбора данных - ТОЛЬКО для личных чатов"""
+    if update.message.chat.type != 'private':
+        return
+
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         await update.message.reply_text(
             "❌ У вас нет прав для этой команды.",
@@ -811,69 +862,20 @@ async def manual_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Спросим какой тип напоминания отправить
-    keyboard = [
-        [
-            InlineKeyboardButton("Субботнее напоминание", callback_data="collect_saturday"),
-            InlineKeyboardButton("Воскресное напоминание", callback_data="collect_sunday")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
+    # Отправляем оба типа напоминаний
+    await start_schedule_collection(context)
+    await send_sunday_reminder(context)
     await update.message.reply_text(
-        "Выберите тип напоминания для отправки:",
-        reply_markup=reply_markup
+        "✅ Напоминания отправлены!",
+        reply_markup=get_main_keyboard(update.effective_user.id)
     )
 
 
-# Добавим обработчик для кнопок выбора типа напоминания
-async def handle_collect_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик выбора типа напоминания"""
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "collect_saturday":
-        await start_schedule_collection(context)
-        await query.edit_message_text("✅ Субботние напоминания отправлены!")
-    elif query.data == "collect_sunday":
-        await send_sunday_reminder(context)
-        await query.edit_message_text("✅ Воскресные напоминания отправлены!")
-
-
-def get_users_without_schedule(pvz_id, week_dates):
-    """Получить список сотрудников без заполненного расписания"""
-    conn = db.get_connection()
-    cursor = conn.cursor()
-
-    # Получаем всех сотрудников ПВЗ
-    cursor.execute('''
-        SELECT u.user_id, u.username, u.first_name, u.full_name 
-        FROM users u 
-        WHERE u.pvz_id = ?
-    ''', (pvz_id,))
-    users = cursor.fetchall()
-    conn.close()
-
-    users_without_schedule = []
-
-    for user in users:
-        user_id, username, first_name, full_name = user
-        # Проверяем, есть ли расписание у пользователя на эту неделю
-        user_schedule = db.get_user_schedule(user_id, week_dates)
-        filled_days = sum(1 for date in week_dates if date in user_schedule)
-
-        # Если нет заполненных дней или заполнено меньше 3 дней - считаем не заполнившим
-        if filled_days < 3:
-            if username:
-                users_without_schedule.append(f"@{username}")
-            else:
-                display_name = full_name or first_name or f"сотрудник {user_id}"
-                users_without_schedule.append(display_name)
-
-    return users_without_schedule
-
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статистика"""
+    """Статистика - ТОЛЬКО для личных чатов"""
+    if update.message.chat.type != 'private':
+        return
+
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         await update.message.reply_text(
             "❌ У вас нет прав для этой команды.",
@@ -957,20 +959,23 @@ def main():
             days=(5,)
         )
 
+        # Задача на воскресенье (каждое воскресенье в 09:00 по Барнаулу) - ОТЧЕТ
+        job_queue.run_daily(
+            send_admin_report,
+            time=datetime.strptime("02:00", "%H:%M").time(),  # 09:00 Барнаул - 7 часов = 02:00 UTC
+            days=(6,)
+        )
 
-        # НОВАЯ ЗАДАЧА: Воскресное напоминание сотрудникам в 09:00 по Барнаулу
+        # Задача на воскресенье (каждое воскресенье в 09:00 по Барнаулу) - НАПОМИНАНИЕ
         job_queue.run_daily(
             send_sunday_reminder,
             time=datetime.strptime("02:00", "%H:%M").time(),  # 09:00 Барнаул - 7 часов = 02:00 UTC
             days=(6,)
         )
 
-        # Задача на воскресенье (каждое воскресенье в 09:00 по Барнаулу) - ТОЛЬКО ОТЧЕТ
-        job_queue.run_daily(
-            send_admin_report,
-            time=datetime.strptime("03:00", "%H:%M").time(),  # 09:00 Барнаул - 7 часов = 02:00 UTC
-            days=(6,)
-        )
+        logging.info("✅ Планировщик задач инициализирован")
+    else:
+        logging.error("❌ Планировщик задач не доступен")
 
     # Устанавливаем команды меню
     application.post_init = set_commands
@@ -982,5 +987,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
