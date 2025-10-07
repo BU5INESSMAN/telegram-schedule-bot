@@ -429,7 +429,132 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard(user_id)
         )
 
-# ... (остальные функции handle_password, handle_full_name, handle_text_message остаются без изменений)
+async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ввода пароля"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    user = update.effective_user
+    user_id = user.id
+    password = update.message.text.strip()
+    
+    # Проверяем состояние пользователя
+    if user_id not in user_states or user_states[user_id].get('state') != 'waiting_password':
+        # Если пользователь не в состоянии ожидания пароля, игнорируем сообщение
+        return
+    
+    # Проверяем пароль
+    pvz = db.get_pvz_by_password(password)
+    if pvz:
+        # Переходим к вводу имени и фамилии
+        user_states[user_id] = {
+            'state': 'waiting_full_name',
+            'pvz_id': pvz[0],
+            'pvz_name': pvz[1]
+        }
+        
+        await update.message.reply_text(
+            "✅ Пароль принят!\n\n"
+            "Теперь введите ваше Имя и Фамилию:\n"
+            "Например: Иван Иванов",
+            reply_markup=get_main_keyboard(user_id)
+        )
+            
+    else:
+        await update.message.reply_text(
+            "❌ Неверный пароль.\n"
+            "Пожалуйста, проверьте пароль и попробуйте еще раз.\n"
+            "Пароль можно получить у администратора.",
+            reply_markup=get_main_keyboard(user_id)
+        )
+
+async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ввода имени и фамилии"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    user = update.effective_user
+    user_id = user.id
+    
+    # Проверяем состояние пользователя
+    if user_id not in user_states or user_states[user_id].get('state') != 'waiting_full_name':
+        # Если пользователь не в состоянии ожидания имени, игнорируем сообщение
+        return
+    
+    full_name = update.message.text.strip()
+    
+    # Проверяем, что введено хотя бы 2 слова (имя и фамилия)
+    if len(full_name.split()) < 2:
+        await update.message.reply_text(
+            "❌ Пожалуйста, введите и Имя и Фамилию.\n"
+            "Например: Иван Иванов\n\n"
+            "Попробуйте еще раз:",
+            reply_markup=get_main_keyboard(user_id)
+        )
+        return
+    
+    # Регистрируем пользователя
+    pvz_id = user_states[user_id]['pvz_id']
+    pvz_name = user_states[user_id]['pvz_name']
+    
+    db.add_user(user_id, user.username, user.first_name, pvz_id, full_name)
+    user_states[user_id] = {'state': 'registered'}
+    
+    await update.message.reply_text(
+        f"✅ Регистрация успешна!\n\n"
+        f"👤 Ваше имя: {full_name}\n"
+        f"🏪 Ваш ПВЗ: {pvz_name}\n\n"
+        "Теперь вы можете заполнить анкету расписания, нажав на кнопку ниже:",
+        reply_markup=get_main_keyboard(user_id)
+    )
+    
+    # Уведомляем администратора о новой регистрации
+    admin_message = (
+        f"👤 Новый сотрудник зарегистрировался!\n\n"
+        f"Имя: {full_name}\n"
+        f"ПВЗ: {pvz_name}\n"
+        f"Время: {format_barnaul_time()}"
+    )
+    
+    try:
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message)
+    except Exception as e:
+        logging.error(f"Ошибка отправки уведомления о регистрации: {e}")
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений (кнопок)"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    # Сначала проверяем, не находится ли пользователь в процессе регистрации
+    if user_id in user_states:
+        state = user_states[user_id].get('state')
+        if state == 'waiting_password':
+            await handle_password(update, context)
+            return
+        elif state == 'waiting_full_name':
+            await handle_full_name(update, context)
+            return
+    
+    # Если пользователь уже зарегистрирован, обрабатываем кнопки
+    if text == "📝 Заполнить анкету":
+        await send_form(update, context)
+    elif text == "📊 Получить отчет":
+        await manual_report(update, context)
+    elif text == "📢 Отправить напоминания":
+        await manual_collect(update, context)
+    else:
+        # Если сообщение не распознано как команда
+        await update.message.reply_text(
+            "Используйте кнопки ниже для работы с ботом:",
+            reply_markup=get_main_keyboard(user_id)
+        )
 
 async def send_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправка формы по команде /form"""
@@ -639,7 +764,176 @@ async def my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard(user_id)
     )
 
-# ... (остальные функции set_chat, help_command, manual_report, manual_collect, manual_sunday_reminders, stats остаются без изменений)
+async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить чат для напоминаний"""
+    user_id = update.effective_user.id
+    user = db.get_user(user_id)
+    
+    if not user:
+        await update.message.reply_text(
+            "❌ Сначала зарегистрируйтесь с помощью /start",
+            reply_markup=get_main_keyboard(user_id)
+        )
+        return
+    
+    # Проверяем, является ли пользователь администратором
+    if str(user_id) != ADMIN_CHAT_ID:
+        await update.message.reply_text(
+            "❌ Только администратор может настраивать чат для напоминаний",
+            reply_markup=get_main_keyboard(user_id)
+        )
+        return
+    
+    pvz_id = user[4]
+    chat_id = update.effective_chat.id
+    
+    db.set_pvz_chat_id(pvz_id, chat_id)
+    
+    await update.message.reply_text(
+        f"✅ Чат настроен для получения напоминаний!\n"
+        f"ПВЗ: {user[6]}\n"
+        f"Chat ID: {chat_id}\n\n"
+        f"Теперь бот будет отправлять сюда напоминания:\n"
+        f"• Субботние в 9:00 по Барнаулу\n"
+        f"• Воскресные в 9:00 по Барнаулу",
+        reply_markup=get_main_keyboard(user_id)
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Справка по командам"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    help_text = (
+        "📋 Бот для составления расписания\n\n"
+        "Используйте кнопки ниже для работы:\n"
+        "• 📝 Заполнить анкету - составить расписание на неделю\n"
+        "• 📊 Получить отчет - для администратора\n"
+        "• 📢 Отправить напоминания - для администратора\n\n"
+        "Команды:\n"
+        "/myschedule - посмотреть мое расписание\n"
+        "/setchat - настроить чат для напоминаний (администратор)\n"
+        "/help - эта справка"
+    )
+    await update.message.reply_text(
+        help_text,
+        reply_markup=get_main_keyboard(update.effective_user.id)
+    )
+
+async def manual_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручная отправка отчета"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    if str(update.effective_user.id) != ADMIN_CHAT_ID:
+        await update.message.reply_text(
+            "❌ У вас нет прав для этой команды.",
+            reply_markup=get_main_keyboard(update.effective_user.id)
+        )
+        return
+    
+    await send_admin_report(context)
+    await update.message.reply_text(
+        "✅ Отчет отправлен!",
+        reply_markup=get_main_keyboard(update.effective_user.id)
+    )
+
+async def manual_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручной запуск сбора данных"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    if str(update.effective_user.id) != ADMIN_CHAT_ID:
+        await update.message.reply_text(
+            "❌ У вас нет прав для этой команды.",
+            reply_markup=get_main_keyboard(update.effective_user.id)
+        )
+        return
+    
+    await start_schedule_collection(context)
+    await update.message.reply_text(
+        "✅ Напоминания отправлены!",
+        reply_markup=get_main_keyboard(update.effective_user.id)
+    )
+
+async def manual_sunday_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручной запуск воскресных напоминаний"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    if str(update.effective_user.id) != ADMIN_CHAT_ID:
+        await update.message.reply_text(
+            "❌ У вас нет прав для этой команды.",
+            reply_markup=get_main_keyboard(update.effective_user.id)
+        )
+        return
+    
+    await send_sunday_reminders(context)
+    await update.message.reply_text(
+        "✅ Воскресные напоминания отправлены!",
+        reply_markup=get_main_keyboard(update.effective_user.id)
+    )
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика"""
+    # Разрешаем только в приватных чатах
+    if not is_private_chat(update):
+        return
+    
+    if str(update.effective_user.id) != ADMIN_CHAT_ID:
+        await update.message.reply_text(
+            "❌ У вас нет прав для этой команды.",
+            reply_markup=get_main_keyboard(update.effective_user.id)
+        )
+        return
+    
+    all_pvz = db.get_all_pvz()
+    stats_text = "📈 Статистика бота:\n\n"
+    
+    for pvz in all_pvz:
+        pvz_id, pvz_name, password, chat_id = pvz
+        
+        # Получаем количество пользователей для этого ПВЗ
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM users WHERE pvz_id = ?', (pvz_id,))
+        user_count = cursor.fetchone()[0]
+        
+        # Получаем количество заполненных расписаний на эту неделю
+        target_week_dates = get_target_week_dates()
+        placeholders = ','.join('?' for _ in target_week_dates)
+        cursor.execute(f'''
+            SELECT COUNT(DISTINCT user_id) FROM schedule 
+            WHERE date IN ({placeholders})
+            AND user_id IN (SELECT user_id FROM users WHERE pvz_id = ?)
+        ''', (*target_week_dates, pvz_id))
+        filled_count = cursor.fetchone()[0]
+        conn.close()
+        
+        stats_text += f"🏪 {pvz_name}:\n"
+        stats_text += f"  👥 Сотрудников: {user_count}\n"
+        stats_text += f"  📝 Заполнили анкету: {filled_count}\n"
+        stats_text += f"  💬 Чат для напоминаний: {'✅' if chat_id else '❌'}\n\n"
+    
+    await update.message.reply_text(
+        stats_text,
+        reply_markup=get_main_keyboard(update.effective_user.id)
+    )
+
+async def set_commands(application: Application):
+    """Установка команд меню"""
+    commands = [
+        BotCommand("start", "Начать работу"),
+        BotCommand("form", "Заполнить анкету"),
+        BotCommand("myschedule", "Мое расписание"),
+        BotCommand("setchat", "Настроить чат для напоминаний (админ)"),
+        BotCommand("help", "Помощь"),
+    ]
+    await application.bot.set_my_commands(commands)
 
 def main():
     """Основная функция"""
