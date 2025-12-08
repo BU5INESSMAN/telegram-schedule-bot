@@ -85,7 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CHOOSING_ROLE
 
-# === Выбор роли (ИСПРАВЛЕНО!) ===
+# === Выбор роли (ИСПРАВЛЕНО: без ошибок с клавиатурой) ===
 async def role_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -186,12 +186,21 @@ async def admin_pvz_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     pvz_id = context.user_data.get("current_pvz_id")
 
+    if not pvz_id:
+        await update.message.reply_text("Ошибка. Вернитесь в «Мои ПВЗ».")
+        return ADMIN_MAIN
+
     if text == "Сменить пароль ПВЗ":
-        await update.message.reply_text("Введите новый пароль:")
+        await update.message.reply_text("Введите новый пароль для этого ПВЗ:")
         return ADMIN_CHANGE_PASSWORD
+
     elif text == "Привязать беседу для напоминаний":
-        await update.message.reply_text("Перешлите сюда любое сообщение из нужной беседы.")
+        await update.message.reply_text(
+            "Перешлите сюда любое сообщение из нужной беседы (группы или канала).\n\n"
+            "Бот запомнит эту беседу — и все напоминания будут приходить туда."
+        )
         return ADMIN_BIND_CHAT
+
     elif text == "Назад к списку ПВЗ":
         await show_my_pvz(update, context)
         return ADMIN_MAIN
@@ -225,19 +234,26 @@ async def admin_change_password(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(f"Пароль ПВЗ «{pvz[1]}» изменён на: {new_pass}")
     return ADMIN_PVZ_SELECTED
 
-# === Привязка беседы ===
+# === Привязка беседы (ИСПРАВЛЕНО: с правильным текстом и обработкой ошибок) ===
 async def admin_bind_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.forward_from_chat:
-        await update.message.reply_text("Пожалуйста, перешлите сообщение из нужной беседы!")
+        await update.message.reply_text(
+            "Вы не переслали сообщение из беседы.\n\n"
+            "Пожалуйста, зайдите в нужную группу и перешлите сюда любое сообщение оттуда."
+        )
         return ADMIN_BIND_CHAT
 
     chat = update.message.forward_from_chat
     pvz_id = context.user_data["current_pvz_id"]
     db.set_pvz_chat_id(pvz_id, str(chat.id))
+    pvz = db.get_pvz_by_id(pvz_id)
 
     await update.message.reply_text(
-        f"Беседа «{chat.title or 'Без названия'}» привязана!\n"
-        f"Теперь напоминания будут сюда."
+        f"Беседа успешно привязана!\n\n"
+        f"ПВЗ: {pvz[1]}\n"
+        f"Беседа: {chat.title or 'Без названия'}\n"
+        f"ID: {chat.id}\n\n"
+        f"Теперь все напоминания будут приходить сюда."
     )
     return ADMIN_PVZ_SELECTED
 
