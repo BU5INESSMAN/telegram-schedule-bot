@@ -85,7 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CHOOSING_ROLE
 
-# === Выбор роли (ИСПРАВЛЕНО: без ошибок с клавиатурой) ===
+# === Выбор роли ===
 async def role_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -141,7 +141,6 @@ async def employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === Админ: главное меню ===
 async def admin_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user_id = update.effective_user.id
 
     if text == "Мои ПВЗ":
         await show_my_pvz(update, context)
@@ -167,7 +166,7 @@ async def show_my_pvz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Ваши ПВЗ:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# === Управление ПВЗ ===
+# === ВЫБОР ПВЗ — ВНЕ ConversationHandler! ===
 async def pvz_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -182,25 +181,23 @@ async def pvz_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.delete()
     return ADMIN_PVZ_SELECTED
 
+# === Управление ПВЗ ===
 async def admin_pvz_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     pvz_id = context.user_data.get("current_pvz_id")
-
     if not pvz_id:
         await update.message.reply_text("Ошибка. Вернитесь в «Мои ПВЗ».")
         return ADMIN_MAIN
 
     if text == "Сменить пароль ПВЗ":
-        await update.message.reply_text("Введите новый пароль для этого ПВЗ:")
+        await update.message.reply_text("Введите новый пароль:")
         return ADMIN_CHANGE_PASSWORD
-
     elif text == "Привязать беседу для напоминаний":
         await update.message.reply_text(
             "Перешлите сюда любое сообщение из нужной беседы (группы или канала).\n\n"
-            "Бот запомнит эту беседу — и все напоминания будут приходить туда."
+            "Бот запомнит её и будет отправлять туда напоминания."
         )
         return ADMIN_BIND_CHAT
-
     elif text == "Назад к списку ПВЗ":
         await show_my_pvz(update, context)
         return ADMIN_MAIN
@@ -215,13 +212,12 @@ async def admin_create_pvz_pass(update: Update, context: ContextTypes.DEFAULT_TY
     name = context.user_data["new_pvz_name"]
     password = update.message.text.strip()
     admin_id = update.effective_user.id
-
     pvz_id = db.create_pvz(name, password, admin_id)
 
     await update.message.reply_text(
         f"ПВЗ «{name}» создан!\n"
         f"Пароль: {password}\n"
-        f"Вы — администратор этого ПВЗ."
+        f"Вы — администратор."
     )
     return ADMIN_MAIN
 
@@ -231,15 +227,15 @@ async def admin_change_password(update: Update, context: ContextTypes.DEFAULT_TY
     pvz_id = context.user_data["current_pvz_id"]
     db.update_pvz_password(pvz_id, new_pass)
     pvz = db.get_pvz_by_id(pvz_id)
-    await update.message.reply_text(f"Пароль ПВЗ «{pvz[1]}» изменён на: {new_pass}")
+    await update.message.reply_text(f"Пароль изменён на: {new_pass}")
     return ADMIN_PVZ_SELECTED
 
-# === Привязка беседы (ИСПРАВЛЕНО: с правильным текстом и обработкой ошибок) ===
+# === Привязка беседы ===
 async def admin_bind_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.forward_from_chat:
         await update.message.reply_text(
-            "Вы не переслали сообщение из беседы.\n\n"
-            "Пожалуйста, зайдите в нужную группу и перешлите сюда любое сообщение оттуда."
+            "Не вижу пересланного сообщения из группы.\n\n"
+            "Зайдите в нужную группу → перешлите любое сообщение сюда."
         )
         return ADMIN_BIND_CHAT
 
@@ -249,11 +245,10 @@ async def admin_bind_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pvz = db.get_pvz_by_id(pvz_id)
 
     await update.message.reply_text(
-        f"Беседа успешно привязана!\n\n"
+        f"Беседа привязана!\n\n"
         f"ПВЗ: {pvz[1]}\n"
-        f"Беседа: {chat.title or 'Без названия'}\n"
-        f"ID: {chat.id}\n\n"
-        f"Теперь все напоминания будут приходить сюда."
+        f"Группа: {chat.title or 'Без названия'}\n"
+        f"Теперь напоминания будут сюда."
     )
     return ADMIN_PVZ_SELECTED
 
@@ -263,39 +258,17 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not pvzs:
         await update.message.reply_text("У вас нет ПВЗ.")
         return
-
     text = "Статистика:\n\n"
     for pvz in pvzs:
         users = db.get_users_by_pvz(pvz[0])
         chat_status = "привязана" if pvz[3] else "не привязана"
         text += f"• {pvz[1]}\n  Сотрудников: {len(users)}\n  Беседа: {chat_status}\n\n"
-
     await update.message.reply_text(text)
 
-# === Напоминания ===
+# === Напоминания (временно отключены, т.к. нет job-queue) ===
 async def start_schedule_collection(context: ContextTypes.DEFAULT_TYPE):
-    week = get_target_week_dates()
-    week_str = f"{week[0]} – {week[-1]}"
-    for pvz in db.get_all_pvz():
-        if pvz[3]:
-            try:
-                await context.bot.send_message(
-                    chat_id=pvz[3],
-                    text=f"Субботнее напоминание!\n\n"
-                         f"Заполните расписание на неделю {week_str}\n\n",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("Заполнить анкету", url=f"https://t.me/{context.bot.username}?start=form")
-                    ]])
-                )
-            except Exception as e:
-                logging.error(f"Ошибка отправки в {pvz[1]}: {e}")
-
-async def send_sunday_reminders(context: ContextTypes.DEFAULT_TYPE):
-    week = get_target_week_dates()
-    week_str = f"{week[0]} – {week[-1]}"
-    for pvz in db.get_all_pvz():
-        if pvz[3]:
-            await context.bot.send_message(pvz[3], f"Воскресенье! Заполните расписание на {week_str}")
+    logging.info("Напоминание: Заполните расписание!")
+    # Будет работать после установки job-queue
 
 # === Основной запуск ===
 def main():
@@ -318,16 +291,11 @@ def main():
         per_user=True
     )
 
+    # КРИТИЧНО: pvz_selected должен быть ВНЕ ConversationHandler!
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(pvz_selected, pattern="^pvz_\\d+$"))
 
-    # Напоминания
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_daily(start_schedule_collection, time=datetime.strptime("02:00", "%H:%M").time(), days=(5,))
-        job_queue.run_daily(send_sunday_reminders, time=datetime.strptime("02:00", "%H:%M").time(), days=(6,))
-
-    logging.info("Бот запущен и готов к работе!")
+    logging.info("Бот запущен и работает!")
     app.run_polling()
 
 if __name__ == "__main__":
