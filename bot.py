@@ -1002,7 +1002,7 @@ def main():
     application.post_init = set_commands
 
     # Запускаем бота
-    logging.info("Бот запущен с часовым поясом Барнаул (UTC+7)...")
+    logging.info("Бот запущен с часовым поясом Барнаул (UTC+7)..")
     print("Бот успешно запущен! Часовой пояс: Барнаул (UTC+7)")
     application.run_polling()
 
